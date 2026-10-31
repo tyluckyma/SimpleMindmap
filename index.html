@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>脑图</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5; --surface: #ffffff; --text: #1f2328; --muted: #6a7078; --line: #dcdde0;
+  --accent: #2f6fed; --root-bg: #1f2328; --root-text: #ffffff;
+  --b0: #d9480f; --b1: #0b7285; --b2: #5f3dc4; --b3: #2b8a3e; --b4: #c2255c; --b5: #a07400;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17191c; --surface: #212429; --text: #e8e9eb; --muted: #9aa0a8; --line: #363a41;
+    --accent: #7aa7ff; --root-bg: #e8e9eb; --root-text: #17191c;
+    --b0: #ff9a66; --b1: #4fc3d9; --b2: #b49cff; --b3: #6fcf86; --b4: #f783ac; --b5: #e0b84c;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font: 14px/20px system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+header {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
+}
+header h1 { margin: 0 4px 0 0; font-size: 15px; font-weight: 600; }
+.group { display: flex; align-items: center; gap: 4px; }
+button.tool {
+  height: 30px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+}
+button.tool:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+button.tool:disabled { color: var(--muted); opacity: .5; cursor: default; background: none; }
+button.tool.primary { background: var(--accent); color: var(--surface); font-weight: 600; }
+button.tool.primary:hover { background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
+#zoom { min-width: 44px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+#status { margin-left: auto; color: var(--muted); font-size: 12px; }
+#stage { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab; touch-action: none; }
+#stage.panning { cursor: grabbing; }
+#world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; }
+#edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+#edges path { fill: none; stroke-width: 2; }
+.node {
+  position: absolute; left: 0; top: 0; width: max-content; max-width: 280px;
+  padding: 5px 11px; border: 1.5px solid var(--c, var(--line)); border-radius: 8px;
+  background: var(--surface); color: var(--text); cursor: default; user-select: none; -webkit-user-select: none;
+}
+.node.d0 { padding: 10px 18px; border-color: var(--root-bg); background: var(--root-bg); color: var(--root-text); font-size: 18px; line-height: 26px; font-weight: 600; border-radius: 10px; }
+.node.d1 { background: color-mix(in srgb, var(--c) 14%, var(--surface)); font-weight: 600; }
+.node.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.node.dragging { opacity: .6; pointer-events: none; z-index: 2; }
+.node.drop-child { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.node.drop-before { box-shadow: 0 -4px 0 -1px var(--accent); }
+.node.drop-after { box-shadow: 0 4px 0 -1px var(--accent); }
+.node .text { display: block; min-width: 1em; white-space: pre-wrap; overflow-wrap: anywhere; outline: none; }
+.node .text[contenteditable="plaintext-only"], .node .text[contenteditable="true"] { user-select: text; -webkit-user-select: text; cursor: text; }
+.fold {
+  position: absolute; right: -10px; top: 50%; transform: translateY(-50%);
+  min-width: 18px; height: 18px; padding: 0 3px; border: 1.5px solid var(--c, var(--root-bg)); border-radius: 9px;
+  background: var(--surface); color: var(--text); font: 600 11px/14px system-ui, sans-serif; cursor: pointer; opacity: 0;
+}
+.node:hover .fold, .node.selected .fold, .fold.closed { opacity: 1; }
+footer { padding: 6px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+footer kbd { font: inherit; color: var(--text); }
+#toast {
+  position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); max-width: calc(100vw - 32px);
+  padding: 8px 14px; border-radius: 8px; background: var(--root-bg); color: var(--root-text);
+  opacity: 0; transition: opacity .15s; pointer-events: none;
+}
+#toast.show { opacity: 1; }
+@media (max-width: 760px) { #status, footer { display: none; } header { padding: 8px 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>脑图</h1>
+  <div class="group">
+    <button class="tool" id="btnNew">新建</button>
+    <button class="tool" id="btnImport" title="支持 .md 和 .json">导入</button>
+  </div>
+  <div class="group">
+    <button class="tool" id="btnUndo" title="Ctrl+Z">撤销</button>
+    <button class="tool" id="btnRedo" title="Ctrl+Y">重做</button>
+  </div>
+  <div class="group">
+    <button class="tool primary" id="btnMd" title="Ctrl+S">导出 Markdown</button>
+    <button class="tool" id="btnJson" title="完整备份，保留折叠状态">JSON</button>
+    <button class="tool" id="btnPng">PNG</button>
+  </div>
+  <div class="group">
+    <button class="tool" id="btnOut" aria-label="缩小">−</button>
+    <span id="zoom">100%</span>
+    <button class="tool" id="btnIn" aria-label="放大">+</button>
+    <button class="tool" id="btnFit">适应</button>
+  </div>
+  <span id="status"></span>
+</header>
+<main id="stage"><div id="world"><svg id="edges"></svg><div id="nodes"></div></div></main>
+<footer>
+  <kbd>Tab</kbd> 加子节点 · <kbd>Enter</kbd> 加同级 · 直接打字或双击改文字 · <kbd>Shift+Enter</kbd> 换行 · <kbd>Del</kbd> 删除 · <kbd>空格</kbd> 折叠 · 方向键移动选中 · <kbd>Alt+↑↓</kbd> 调整顺序 · 拖动节点换位置 · 拖动空白处平移 · <kbd>Ctrl+滚轮</kbd> 缩放
+</footer>
+<div id="toast" role="status"></div>
+<input id="file" type="file" accept=".md,.markdown,.txt,.json" hidden>
+
+<script>
+const STORE_KEY = 'mindmap.v1';
+const HGAP = 52, VGAP = 12, HISTORY_LIMIT = 100, BRANCH_COLORS = 6;
+const $ = id => document.getElementById(id);
+const stage = $('stage'), world = $('world'), edges = $('edges'), nodesEl = $('nodes');
+
+let root, sel;
+let info = new Map();           // 节点 id -> { node, parent, el, depth, x, y, w, h, sub }
+let undoStack = [], redoStack = [];
+let view = { x: 0, y: 0, z: 1 };
+let editing = null;
+
+const uid = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const newNode = (text, children = []) => ({ id: uid(), text, children });
+const blankMap = () => newNode('中心主题');
+const visibleKids = n => n.collapsed ? [] : n.children;
+const countAll = n => n.children.reduce((sum, c) => sum + 1 + countAll(c), 0);
+const contains = (n, id) => n.id === id || n.children.some(c => contains(c, id));
+
+/* ---------- 保存与历史 ---------- */
+
+function save() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(root));
+    $('status').textContent = '已自动保存在此浏览器';
+  } catch {
+    $('status').textContent = '无法自动保存，请记得导出';
+  }
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    return raw ? normalize(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalize(n) {
+  if (!n || typeof n.text !== 'string') throw new Error('文件内容不是脑图');
+  const out = { id: typeof n.id === 'string' ? n.id : uid(), text: n.text || '未命名', children: (n.children || []).map(normalize) };
+  if (n.collapsed) out.collapsed = true;
+  return out;
+}
+
+const snapshot = () => JSON.stringify({ root, sel });
+
+function restore(state) {
+  ({ root, sel } = JSON.parse(state));
+  save();
+  render();
+}
+
+function mutate(fn) {
+  undoStack.push(snapshot());
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  redoStack = [];
+  fn();
+  save();
+  render();
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshot());
+  restore(undoStack.pop());
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshot());
+  restore(redoStack.pop());
+}
+
+function replaceMap(next, message) {
+  mutate(() => { root = next; sel = next.id; });
+  fit();
+  toast(message);
+}
+
+/* ---------- 渲染与布局 ---------- */
+
+function render() {
+  nodesEl.textContent = '';
+  info = new Map();
+  const walk = (node, parent, depth, color) => {
+    const el = document.createElement('div');
+    el.className = `node d${Math.min(depth, 2)}`;
+    el.dataset.id = node.id;
+    if (color !== null) el.style.setProperty('--c', `var(--b${color})`);
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = node.text;
+    el.append(text);
+    if (node.children.length) {
+      const fold = document.createElement('button');
+      fold.className = 'fold' + (node.collapsed ? ' closed' : '');
+      fold.tabIndex = -1;
+      fold.textContent = node.collapsed ? countAll(node) : '−';
+      el.append(fold);
+    }
+    nodesEl.append(el);
+    info.set(node.id, { node, parent, el, depth, color });
+    visibleKids(node).forEach((kid, i) => walk(kid, node, depth + 1, depth === 0 ? i % BRANCH_COLORS : color));
+  };
+  walk(root, null, 0, null);
+  if (!info.has(sel)) sel = root.id;
+  layout();
+  markSelection();
+  $('btnUndo').disabled = !undoStack.length;
+  $('btnRedo').disabled = !redoStack.length;
+}
+
+function layout() {
+  for (const i of info.values()) { i.w = i.el.offsetWidth; i.h = i.el.offsetHeight; }
+  const measure = n => {
+    const i = info.get(n.id), kids = visibleKids(n);
+    const total = kids.reduce((sum, k) => sum + measure(k), 0) + VGAP * Math.max(0, kids.length - 1);
+    i.kidsHeight = total;
+    return i.sub = Math.max(i.h, total);
+  };
+  const place = (n, x, cy) => {
+    const i = info.get(n.id);
+    i.x = x; i.y = cy - i.h / 2;
+    i.el.style.transform = `translate(${i.x}px, ${i.y}px)`;
+    let y = cy - i.kidsHeight / 2;
+    for (const k of visibleKids(n)) {
+      const sub = info.get(k.id).sub;
+      place(k, x + i.w + HGAP, y + sub / 2);
+      y += sub + VGAP;
+    }
+  };
+  measure(root);
+  place(root, 0, 0);
+  edges.textContent = '';
+  for (const c of info.values()) {
+    if (!c.parent) continue;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', edgePath(c));
+    path.style.stroke = `var(--b${c.color})`;
+    edges.append(path);
+  }
+}
+
+function edgePoints(c) {
+  const p = info.get(c.parent.id);
+  return { x1: p.x + p.w, y1: p.y + p.h / 2, x2: c.x, y2: c.y + c.h / 2, mid: p.x + p.w + HGAP / 2 };
+}
+
+function edgePath(c) {
+  const { x1, y1, x2, y2, mid } = edgePoints(c);
+  return `M${x1} ${y1} C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
+}
+
+function markSelection() {
+  for (const i of info.values()) i.el.classList.toggle('selected', i.node.id === sel);
+}
+
+function select(id) {
+  sel = id;
+  markSelection();
+  ensureVisible(id);
+}
+
+/* ---------- 视图 ---------- */
+
+function applyView() {
+  world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
+  $('zoom').textContent = Math.round(view.z * 100) + '%';
+}
+
+function bounds() {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const i of info.values()) {
+    x1 = Math.min(x1, i.x); y1 = Math.min(y1, i.y);
+    x2 = Math.max(x2, i.x + i.w); y2 = Math.max(y2, i.y + i.h);
+  }
+  return { x1, y1, x2, y2, w: x2 - x1, h: y2 - y1 };
+}
+
+function fit() {
+  const b = bounds(), W = stage.clientWidth, H = stage.clientHeight;
+  view.z = Math.max(.2, Math.min(1, (W - 80) / b.w, (H - 80) / b.h));
+  view.x = (W - b.w * view.z) / 2 - b.x1 * view.z;
+  view.y = (H - b.h * view.z) / 2 - b.y1 * view.z;
+  applyView();
+}
+
+function zoomAt(cx, cy, factor) {
+  const z = Math.max(.2, Math.min(3, view.z * factor)), k = z / view.z;
+  view.x = cx - (cx - view.x) * k;
+  view.y = cy - (cy - view.y) * k;
+  view.z = z;
+  applyView();
+}
+
+function ensureVisible(id) {
+  const i = info.get(id), margin = 40;
+  if (!i) return;
+  const left = i.x * view.z + view.x, top = i.y * view.z + view.y;
+  const right = left + i.w * view.z, bottom = top + i.h * view.z;
+  if (right > stage.clientWidth - margin) view.x -= right - stage.clientWidth + margin;
+  if (left < margin) view.x += margin - left;
+  if (bottom > stage.clientHeight - margin) view.y -= bottom - stage.clientHeight + margin;
+  if (top < margin) view.y += margin - top;
+  applyView();
+}
+
+/* ---------- 编辑操作 ---------- */
+
+function startEdit(id, { selectAll = true, isNew = false } = {}) {
+  const span = info.get(id)?.el.querySelector('.text');
+  if (!span) return;
+  try { span.contentEditable = 'plaintext-only'; } catch { span.contentEditable = 'true'; }
+  editing = { id, span, old: info.get(id).node.text, isNew };
+  span.focus();
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  if (!selectAll) range.collapse(false);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(range);
+  ensureVisible(id);
+}
+
+function commitEdit() {
+  if (!editing) return;
+  const { id, span, old } = editing;
+  editing = null;
+  span.contentEditable = 'false';
+  const text = span.innerText.replace(/ /g, ' ').trim();
+  if (text && text !== old) {
+    mutate(() => { info.get(id).node.text = text; });
+  } else {
+    span.textContent = old;
+    layout();
+  }
+}
+
+function cancelEdit() {
+  const { span, old, isNew } = editing;
+  editing = null;
+  span.contentEditable = 'false';
+  span.textContent = old;
+  if (isNew) { undo(); redoStack.pop(); render(); } else layout();
+}
+
+function addChild() {
+  const parent = info.get(sel).node, kid = newNode('新主题');
+  mutate(() => { delete parent.collapsed; parent.children.push(kid); sel = kid.id; });
+  startEdit(kid.id, { isNew: true });
+}
+
+function addSibling() {
+  const { node, parent } = info.get(sel);
+  if (!parent) return addChild();
+  const kid = newNode('新主题');
+  mutate(() => { parent.children.splice(parent.children.indexOf(node) + 1, 0, kid); sel = kid.id; });
+  startEdit(kid.id, { isNew: true });
+}
+
+function removeSelected() {
+  const { node, parent } = info.get(sel);
+  if (!parent) return toast('中心主题不能删除');
+  mutate(() => {
+    const list = parent.children, at = list.indexOf(node);
+    list.splice(at, 1);
+    sel = (list[at] || list[at - 1] || parent).id;
+  });
+}
+
+function toggleFold(id) {
+  const n = info.get(id).node;
+  if (!n.children.length) return;
+  if (n.collapsed) delete n.collapsed; else n.collapsed = true;
+  sel = id;
+  save();
+  render();
+}
+
+function moveAmongSiblings(delta) {
+  const { node, parent } = info.get(sel);
+  if (!parent) return;
+  const list = parent.children, at = list.indexOf(node), to = at + delta;
+  if (to < 0 || to >= list.length) return;
+  mutate(() => { list.splice(at, 1); list.splice(to, 0, node); });
+}
+
+function moveNode(id, targetId, zone) {
+  const { node, parent } = info.get(id), target = info.get(targetId);
+  mutate(() => {
+    parent.children.splice(parent.children.indexOf(node), 1);
+    if (zone === 'child') {
+      delete target.node.collapsed;
+      target.node.children.push(node);
+    } else {
+      const list = target.parent.children;
+      list.splice(list.indexOf(target.node) + (zone === 'after' ? 1 : 0), 0, node);
+    }
+  });
+}
+
+function navigate(key) {
+  const cur = info.get(sel);
+  if (key === 'ArrowLeft') return cur.parent && select(cur.parent.id);
+  if (key === 'ArrowRight') {
+    if (cur.node.collapsed) toggleFold(sel);
+    const kids = visibleKids(cur.node);
+    return kids.length && select(kids[Math.floor((kids.length - 1) / 2)].id);
+  }
+  const dir = key === 'ArrowUp' ? -1 : 1, cy = cur.y + cur.h / 2, cx = cur.x + cur.w / 2;
+  let best = null, bestScore = Infinity;
+  for (const i of info.values()) {
+    const dy = (i.y + i.h / 2 - cy) * dir;
+    if (i === cur || dy <= 1) continue;
+    const score = dy + Math.abs(i.x + i.w / 2 - cx) * 2;
+    if (score < bestScore) { best = i; bestScore = score; }
+  }
+  if (best) select(best.node.id);
+}
+
+/* ---------- 导入与导出 ---------- */
+
+const encodeLine = t => t.replace(/\n/g, '<br>');
+const decodeLine = t => t.replace(/<br\s*\/?>/gi, '\n').trim() || '未命名';
+
+function toMarkdown(map) {
+  const lines = [`# ${encodeLine(map.text)}`, ''];
+  const walk = (n, depth) => {
+    lines.push(`${'  '.repeat(depth)}- ${encodeLine(n.text)}`);
+    n.children.forEach(c => walk(c, depth + 1));
+  };
+  map.children.forEach(c => walk(c, 0));
+  return lines.join('\n') + '\n';
+}
+
+function fromMarkdown(src) {
+  const top = { children: [] }, headings = [];
+  let list = [];
+  const add = (parent, text) => {
+    const n = newNode(decodeLine(text));
+    parent.children.push(n);
+    return n;
+  };
+  const headingNode = () => headings.length ? headings[headings.length - 1].node : top;
+  for (const raw of src.split(/\r?\n/)) {
+    const line = raw.replace(/\t/g, '    ');
+    if (!line.trim() || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) continue;
+    let m;
+    if ((m = line.match(/^ {0,3}(#{1,6})\s+(.*)$/))) {
+      const level = m[1].length;
+      while (headings.length && headings[headings.length - 1].level >= level) headings.pop();
+      headings.push({ level, node: add(headingNode(), m[2]) });
+      list = [];
+    } else if ((m = line.match(/^(\s*)(?:[-*+]|\d+[.)])(?:\s+(.*))?$/))) {
+      const indent = m[1].length;
+      while (list.length && list[list.length - 1].indent >= indent) list.pop();
+      const parent = list.length ? list[list.length - 1].node : headingNode();
+      list.push({ indent, node: add(parent, m[2] || '') });
+    } else {
+      add(list.length ? list[list.length - 1].node : headingNode(), line);
+    }
+  }
+  if (!top.children.length) throw new Error('文件里没有内容');
+  return top.children.length === 1 ? top.children[0] : newNode('导入的导图', top.children);
+}
+
+const fileBase = () => (root.text.split('\n')[0].replace(/[\\/:*?"<>|]/g, ' ').trim() || '脑图').slice(0, 60);
+
+async function saveFile(blob, name, description, mime, ext) {
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await showSaveFilePicker({ suggestedName: name, types: [{ description, accept: { [mime]: [ext] } }] });
+      const writer = await handle.createWritable();
+      await writer.write(blob);
+      await writer.close();
+      return toast(`已保存：${handle.name}`);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(`已下载：${name}`);
+}
+
+function exportMarkdown() {
+  commitEdit();
+  saveFile(new Blob([toMarkdown(root)], { type: 'text/markdown' }), `${fileBase()}.md`, 'Markdown', 'text/markdown', '.md');
+}
+
+function exportJson() {
+  commitEdit();
+  saveFile(new Blob([JSON.stringify(root, null, 2)], { type: 'application/json' }), `${fileBase()}.json`, 'JSON', 'application/json', '.json');
+}
+
+function wrapText(ctx, text, width) {
+  const lines = [];
+  for (const para of text.split('\n')) {
+    let line = '';
+    for (const ch of para) {
+      if (line && ctx.measureText(line + ch).width > width) { lines.push(line); line = ch; } else line += ch;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+function renderPng() {
+  const pad = 40, b = bounds();
+  const W = b.w + pad * 2 + 20, H = b.h + pad * 2;
+  const scale = Math.min(2, 16000 / Math.max(W, H));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(W * scale);
+  canvas.height = Math.ceil(H * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.fillStyle = getComputedStyle(document.body).backgroundColor;
+  ctx.fillRect(0, 0, W, H);
+  ctx.translate(pad - b.x1, pad - b.y1);
+  ctx.lineWidth = 2;
+  for (const c of info.values()) {
+    if (!c.parent) continue;
+    const { x1, y1, x2, y2, mid } = edgePoints(c);
+    ctx.strokeStyle = getComputedStyle(c.el).borderTopColor;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.bezierCurveTo(mid, y1, mid, y2, x2, y2);
+    ctx.stroke();
+  }
+  ctx.textBaseline = 'middle';
+  for (const i of info.values()) {
+    const cs = getComputedStyle(i.el);
+    ctx.beginPath();
+    ctx.roundRect(i.x, i.y, i.w, i.h, parseFloat(cs.borderTopLeftRadius));
+    ctx.fillStyle = cs.backgroundColor;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = cs.borderTopColor;
+    ctx.stroke();
+    ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    ctx.fillStyle = cs.color;
+    const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.borderLeftWidth);
+    const lineHeight = parseFloat(cs.lineHeight);
+    const lines = wrapText(ctx, i.node.text, i.w - padX * 2 + 1);
+    lines.forEach((line, n) => ctx.fillText(line, i.x + padX, i.y + i.h / 2 + (n - (lines.length - 1) / 2) * lineHeight));
+    if (i.node.collapsed) {
+      const cx = i.x + i.w, cy = i.y + i.h / 2, label = String(countAll(i.node));
+      const fold = i.el.querySelector('.fold'), fs = getComputedStyle(fold);
+      ctx.font = fs.font;
+      const r = 9, half = Math.max(0, ctx.measureText(label).width / 2 - 4);
+      ctx.beginPath();
+      ctx.roundRect(cx - half - r + 1, cy - r, (half + r) * 2, r * 2, r);
+      ctx.fillStyle = fs.backgroundColor;
+      ctx.fill();
+      ctx.strokeStyle = fs.borderTopColor;
+      ctx.stroke();
+      ctx.fillStyle = fs.color;
+      ctx.textAlign = 'center';
+      ctx.fillText(label, cx + 1, cy + .5);
+      ctx.textAlign = 'start';
+    }
+  }
+  return canvas;
+}
+
+function exportPng() {
+  commitEdit();
+  renderPng().toBlob(blob => saveFile(blob, `${fileBase()}.png`, 'PNG 图片', 'image/png', '.png'));
+}
+
+async function importFile(file) {
+  try {
+    const text = await file.text();
+    const map = /\.json$/i.test(file.name) ? normalize(JSON.parse(text)) : fromMarkdown(text);
+    replaceMap(map, `已导入：${file.name}（可用撤销恢复原来的导图）`);
+  } catch (e) {
+    toast(`导入失败：${e.message}`);
+  }
+}
+
+let toastTimer;
+function toast(message) {
+  const el = $('toast');
+  el.textContent = message;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+/* ---------- 输入事件 ---------- */
+
+document.addEventListener('keydown', e => {
+  const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+  if (ctrl && key === 's') { e.preventDefault(); return exportMarkdown(); }
+  if (editing) {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(); }
+    else if (e.key === 'Tab') { e.preventDefault(); commitEdit(); addChild(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+    return;
+  }
+  if (ctrl && key === 'z') { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
+  if (ctrl && key === 'y') { e.preventDefault(); return redo(); }
+  if (ctrl) return;
+  if (e.altKey) {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); moveAmongSiblings(e.key === 'ArrowUp' ? -1 : 1); }
+    return;
+  }
+  switch (e.key) {
+    case 'Tab': e.preventDefault(); return addChild();
+    case 'Enter': e.preventDefault(); return addSibling();
+    case 'Delete': case 'Backspace': e.preventDefault(); return removeSelected();
+    case 'F2': e.preventDefault(); return startEdit(sel, { selectAll: false });
+    case ' ': e.preventDefault(); return toggleFold(sel);
+    case 'ArrowUp': case 'ArrowDown': case 'ArrowLeft': case 'ArrowRight':
+      e.preventDefault(); return navigate(e.key);
+  }
+  // 不阻止默认行为：按键（包括中文输入法）会落到刚获得焦点的节点上
+  if (e.key.length === 1 || e.key === 'Process') startEdit(sel);
+});
+
+nodesEl.addEventListener('input', () => { if (editing) layout(); });
+nodesEl.addEventListener('focusout', () => commitEdit());
+nodesEl.addEventListener('dblclick', e => {
+  const el = e.target.closest('.node');
+  if (el && !e.target.closest('.fold')) startEdit(el.dataset.id, { selectAll: false });
+});
+
+stage.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  const fold = e.target.closest('.fold');
+  if (fold) return toggleFold(fold.parentElement.dataset.id);
+  if (e.target.closest('[contenteditable="plaintext-only"], [contenteditable="true"]')) return;
+  const el = e.target.closest('.node');
+  e.preventDefault();
+  document.activeElement?.blur();
+  if (el) startNodeDrag(e, el.dataset.id); else startPan(e);
+});
+
+function trackPointer(onMove, onUp) {
+  const end = e => {
+    removeEventListener('pointermove', onMove);
+    removeEventListener('pointerup', end);
+    removeEventListener('pointercancel', end);
+    onUp(e);
+  };
+  addEventListener('pointermove', onMove);
+  addEventListener('pointerup', end);
+  addEventListener('pointercancel', end);
+}
+
+function startPan(e) {
+  const sx = e.clientX - view.x, sy = e.clientY - view.y;
+  stage.classList.add('panning');
+  trackPointer(m => { view.x = m.clientX - sx; view.y = m.clientY - sy; applyView(); }, () => stage.classList.remove('panning'));
+}
+
+function startNodeDrag(e, id) {
+  sel = id;
+  markSelection();
+  const i = info.get(id);
+  if (!i) return;
+  let dragging = false, drop = null;
+  const clearDrop = () => {
+    if (drop) info.get(drop.id).el.classList.remove(`drop-${drop.zone}`);
+    drop = null;
+  };
+  trackPointer(m => {
+    const dx = (m.clientX - e.clientX) / view.z, dy = (m.clientY - e.clientY) / view.z;
+    if (!dragging) {
+      if (!i.parent || Math.hypot(dx, dy) * view.z < 5) return;
+      dragging = true;
+      i.el.classList.add('dragging');
+    }
+    i.el.style.transform = `translate(${i.x + dx}px, ${i.y + dy}px)`;
+    clearDrop();
+    const under = document.elementsFromPoint(m.clientX, m.clientY).find(el => el.classList.contains('node'));
+    const targetId = under?.dataset.id;
+    if (!targetId || contains(i.node, targetId)) return;
+    const rect = under.getBoundingClientRect(), ratio = (m.clientY - rect.top) / rect.height;
+    const zone = !info.get(targetId).parent || (ratio >= .25 && ratio <= .75) ? 'child' : ratio < .25 ? 'before' : 'after';
+    drop = { id: targetId, zone };
+    under.classList.add(`drop-${zone}`);
+  }, () => {
+    if (!dragging) return;
+    i.el.classList.remove('dragging');
+    const target = drop;
+    clearDrop();
+    if (target) moveNode(id, target.id, target.zone); else layout();
+  });
+}
+
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (e.ctrlKey) {
+    const r = stage.getBoundingClientRect();
+    zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * .01));
+  } else {
+    view.x -= e.deltaX; view.y -= e.deltaY;
+    applyView();
+  }
+}, { passive: false });
+
+const centerZoom = factor => zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, factor);
+
+$('btnNew').onclick = () => replaceMap(blankMap(), '已新建（可用撤销恢复原来的导图）');
+$('btnImport').onclick = () => $('file').click();
+$('btnUndo').onclick = undo;
+$('btnRedo').onclick = redo;
+$('btnMd').onclick = exportMarkdown;
+$('btnJson').onclick = exportJson;
+$('btnPng').onclick = exportPng;
+$('btnIn').onclick = () => centerZoom(1.2);
+$('btnOut').onclick = () => centerZoom(1 / 1.2);
+$('btnFit').onclick = fit;
+$('file').onchange = e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
+// 点完按钮把焦点还给页面，否则 Enter 和空格会再次触发按钮
+document.addEventListener('click', e => e.target.closest('button')?.blur());
+
+root = load() || blankMap();
+sel = root.id;
+render();
+save();
+// 页面刚加载时画布可能还没有尺寸，等有了尺寸再适配一次
+const firstFit = new ResizeObserver(() => {
+  if (!stage.clientWidth) return;
+  firstFit.disconnect();
+  fit();
+});
+firstFit.observe(stage);
+</script>
+</body>
+</html>
