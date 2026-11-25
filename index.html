@@ -66,10 +66,31 @@ button.tool.primary:hover { background: color-mix(in srgb, var(--accent) 85%, va
   background: var(--surface); color: var(--text); font: 600 11px/14px system-ui, sans-serif; cursor: pointer; opacity: 0;
 }
 .node:hover .fold, .node.selected .fold, .fold.closed { opacity: 1; }
+#tabbar {
+  display: flex; align-items: stretch; gap: 4px; padding: 0 8px;
+  background: var(--surface); border-top: 1px solid var(--line);
+}
+#tabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.tab {
+  display: flex; flex: none; align-items: center; gap: 2px; max-width: 200px; height: 36px; padding: 0 4px 0 12px;
+  border-top: 2px solid transparent; color: var(--muted); cursor: pointer; user-select: none; -webkit-user-select: none;
+}
+.tab:hover { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.tab.active { color: var(--text); background: var(--bg); border-top-color: var(--accent); font-weight: 600; }
+.tab .label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 4px; }
+.tab .close {
+  flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px;
+  background: none; color: inherit; font: inherit; line-height: 20px; cursor: pointer; opacity: 0;
+}
+.tab:hover .close, .tab.active .close { opacity: .6; }
+.tab .close:hover { opacity: 1; background: color-mix(in srgb, var(--text) 10%, transparent); }
+.tab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+.tab.drop-after { box-shadow: inset -2px 0 0 var(--accent); }
+#btnAddTab { flex: none; align-self: center; font-size: 18px; }
 footer { padding: 6px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 footer kbd { font: inherit; color: var(--text); }
 #toast {
-  position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); max-width: calc(100vw - 32px);
+  position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%); max-width: calc(100vw - 32px);
   padding: 8px 14px; border-radius: 8px; background: var(--root-bg); color: var(--root-text);
   opacity: 0; transition: opacity .15s; pointer-events: none;
 }
@@ -81,7 +102,7 @@ footer kbd { font: inherit; color: var(--text); }
 <header>
   <h1>脑图</h1>
   <div class="group">
-    <button class="tool" id="btnNew">新建</button>
+    <button class="tool" id="btnNew" title="在新标签页里新建一张导图">新建</button>
     <button class="tool" id="btnImport" title="支持 .md 和 .json">导入</button>
   </div>
   <div class="group">
@@ -102,14 +123,18 @@ footer kbd { font: inherit; color: var(--text); }
   <span id="status"></span>
 </header>
 <main id="stage"><div id="world"><svg id="edges"></svg><div id="nodes"></div></div></main>
+<nav id="tabbar">
+  <div id="tabs"></div>
+  <button class="tool" id="btnAddTab" title="新建导图" aria-label="新建导图">+</button>
+</nav>
 <footer>
-  <kbd>Tab</kbd> 加子节点 · <kbd>Enter</kbd> 加同级 · 直接打字或双击改文字 · <kbd>Shift+Enter</kbd> 换行 · <kbd>Del</kbd> 删除 · <kbd>空格</kbd> 折叠 · 方向键移动选中 · <kbd>Alt+↑↓</kbd> 调整顺序 · 拖动节点换位置 · 拖动空白处平移 · <kbd>Ctrl+滚轮</kbd> 缩放
+  <kbd>Tab</kbd> 加子节点 · <kbd>Enter</kbd> 加同级 · 直接打字或双击改文字 · <kbd>Shift+Enter</kbd> 换行 · <kbd>Del</kbd> 删除 · <kbd>空格</kbd> 折叠 · 方向键移动选中 · <kbd>Alt+↑↓</kbd> 调整顺序 · 拖动节点换位置 · 拖动空白处平移 · <kbd>Ctrl+滚轮</kbd> 缩放 · 底部标签可拖动排序，双击改名
 </footer>
 <div id="toast" role="status"></div>
 <input id="file" type="file" accept=".md,.markdown,.txt,.json" hidden>
 
 <script>
-const STORE_KEY = 'mindmap.v1';
+const STORE_KEY = 'mindmap.v2', OLD_KEY = 'mindmap.v1';   // v1 只存一张图，首次打开时自动迁移
 const HGAP = 52, VGAP = 12, HISTORY_LIMIT = 100, BRANCH_COLORS = 6;
 const $ = id => document.getElementById(id);
 const stage = $('stage'), world = $('world'), edges = $('edges'), nodesEl = $('nodes');
@@ -119,6 +144,7 @@ let info = new Map();           // 节点 id -> { node, parent, el, depth, x, y,
 let undoStack = [], redoStack = [];
 let view = { x: 0, y: 0, z: 1 };
 let editing = null;
+let tabs = [], active = null;   // 每个标签：{ id, root, sel, undo, redo, view }，root/sel 等全局变量指向当前标签
 
 const uid = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const newNode = (text, children = []) => ({ id: uid(), text, children });
@@ -130,21 +156,35 @@ const contains = (n, id) => n.id === id || n.children.some(c => contains(c, id))
 /* ---------- 保存与历史 ---------- */
 
 function save() {
+  if (active) { active.root = root; active.sel = sel; }
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(root));
-    $('status').textContent = '已自动保存在此浏览器';
+    const maps = tabs.map(t => ({ id: t.id, root: t.root, sel: t.sel }));
+    localStorage.setItem(STORE_KEY, JSON.stringify({ active: active?.id, maps }));
+    $('status').textContent = `已自动保存在此浏览器 · ${tabs.length} 张导图`;
   } catch {
     $('status').textContent = '无法自动保存，请记得导出';
   }
 }
 
+const makeTab = (map, id, selId) => ({
+  id: typeof id === 'string' ? id : uid(), root: map,
+  sel: typeof selId === 'string' ? selId : map.id, undo: [], redo: [], view: null,
+});
+
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    return raw ? normalize(JSON.parse(raw)) : null;
-  } catch {
-    return null;
-  }
+    if (raw) {
+      const data = JSON.parse(raw);
+      const list = (data.maps || []).flatMap(m => {
+        try { return [makeTab(normalize(m.root), m.id, m.sel)]; } catch { return []; }
+      });
+      if (list.length) return { list, activeId: data.active };
+    }
+    const old = localStorage.getItem(OLD_KEY);
+    if (old) return { list: [makeTab(normalize(JSON.parse(old)))] };
+  } catch {}
+  return null;
 }
 
 function normalize(n) {
@@ -189,6 +229,96 @@ function replaceMap(next, message) {
   toast(message);
 }
 
+/* ---------- 多张导图（底部标签） ---------- */
+
+function stashActive() {
+  if (!active) return;
+  Object.assign(active, { root, sel, undo: undoStack, redo: redoStack, view: { ...view } });
+}
+
+function activate(tab, { persist = true } = {}) {
+  commitEdit();
+  stashActive();
+  active = tab;
+  ({ root, sel } = tab);
+  undoStack = tab.undo;
+  redoStack = tab.redo;
+  render();
+  if (tab.view) { view = { ...tab.view }; applyView(); } else fit();
+  $('tabs').querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (persist) save();
+}
+
+function addTab(map) {
+  const tab = makeTab(map);
+  tabs.push(tab);
+  activate(tab);
+  return tab;
+}
+
+function closeTab(tab) {
+  if (tabs.length < 2) return;
+  const map = tab === active ? root : tab.root;
+  const title = map.text.split('\n')[0];
+  if (map.children.length && !confirm(`关闭「${title}」？\n这张导图会从浏览器缓存中删除，需要的话请先导出备份。`)) return;
+  const at = tabs.indexOf(tab);
+  if (tab === active) activate(tabs[at + 1] || tabs[at - 1], { persist: false });
+  tabs.splice(at, 1);
+  save();
+  renderTabs();
+  toast(`已关闭「${title}」`);
+}
+
+const isPristine = m => !m.children.length && m.text === '中心主题';
+
+function renderTabs() {
+  const box = $('tabs');
+  box.textContent = '';
+  for (const t of tabs) {
+    const map = t === active ? root : t.root;
+    const el = document.createElement('div');
+    el.className = 'tab' + (t === active ? ' active' : '');
+    el.dataset.id = t.id;
+    el.draggable = true;
+    el.title = map.text + '\n双击改名，拖动排序';
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = map.text.split('\n')[0] || '未命名';
+    el.append(label);
+    if (tabs.length > 1) {
+      const close = document.createElement('button');
+      close.className = 'close';
+      close.tabIndex = -1;
+      close.textContent = '×';
+      close.setAttribute('aria-label', '关闭');
+      el.append(close);
+    }
+    box.append(el);
+  }
+}
+
+// 另一个浏览器窗口改了数据时同步过来，避免两边互相覆盖、把对方新建的导图冲掉
+function syncFromStorage() {
+  const saved = load();
+  if (!saved) return;
+  if (editing) { editing.span.contentEditable = 'false'; editing = null; }
+  stashActive();
+  const old = new Map(tabs.map(t => [t.id, t]));
+  tabs = saved.list.map(t => {
+    const o = old.get(t.id);
+    if (!o) return t;
+    if (JSON.stringify(o.root) === JSON.stringify(t.root)) return o;
+    t.view = o.view;   // 内容变了：沿用视图，撤销记录作废
+    return t;
+  });
+  active = tabs.find(t => t.id === active?.id) || tabs.find(t => t.id === saved.activeId) || tabs[0];
+  ({ root, sel } = active);
+  undoStack = active.undo;
+  redoStack = active.redo;
+  render();
+  if (active.view) { view = { ...active.view }; applyView(); } else fit();
+}
+
 /* ---------- 渲染与布局 ---------- */
 
 function render() {
@@ -220,6 +350,7 @@ function render() {
   markSelection();
   $('btnUndo').disabled = !undoStack.length;
   $('btnRedo').disabled = !redoStack.length;
+  renderTabs();
 }
 
 function layout() {
@@ -587,7 +718,8 @@ async function importFile(file) {
   try {
     const text = await file.text();
     const map = /\.json$/i.test(file.name) ? normalize(JSON.parse(text)) : fromMarkdown(text);
-    replaceMap(map, `已导入：${file.name}（可用撤销恢复原来的导图）`);
+    if (isPristine(root)) replaceMap(map, `已导入：${file.name}`);
+    else { addTab(map); toast(`已导入到新标签页：${file.name}`); }
   } catch (e) {
     toast(`导入失败：${e.message}`);
   }
@@ -718,7 +850,9 @@ stage.addEventListener('wheel', e => {
 
 const centerZoom = factor => zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, factor);
 
-$('btnNew').onclick = () => replaceMap(blankMap(), '已新建（可用撤销恢复原来的导图）');
+const newMap = () => { addTab(blankMap()); startEdit(root.id); };
+$('btnNew').onclick = newMap;
+$('btnAddTab').onclick = newMap;
 $('btnImport').onclick = () => $('file').click();
 $('btnUndo').onclick = undo;
 $('btnRedo').onclick = redo;
@@ -732,10 +866,68 @@ $('file').onchange = e => { if (e.target.files[0]) importFile(e.target.files[0])
 // 点完按钮把焦点还给页面，否则 Enter 和空格会再次触发按钮
 document.addEventListener('click', e => e.target.closest('button')?.blur());
 
-root = load() || blankMap();
-sel = root.id;
-render();
-save();
+/* ---------- 标签栏事件 ---------- */
+
+const tabsEl = $('tabs');
+const tabOf = el => tabs.find(t => t.id === el?.closest('.tab')?.dataset.id);
+
+tabsEl.addEventListener('click', e => {
+  const tab = tabOf(e.target);
+  if (!tab) return;
+  if (e.target.closest('.close')) closeTab(tab);
+  else if (tab !== active) activate(tab);
+});
+tabsEl.addEventListener('auxclick', e => { if (e.button === 1 && tabOf(e.target)) closeTab(tabOf(e.target)); });
+tabsEl.addEventListener('dblclick', e => {
+  const tab = tabOf(e.target);
+  if (!tab || e.target.closest('.close')) return;
+  if (tab !== active) activate(tab);
+  select(root.id);
+  startEdit(root.id);
+});
+tabsEl.addEventListener('wheel', e => {
+  if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+  tabsEl.scrollLeft += e.deltaY;
+  e.preventDefault();
+}, { passive: false });
+
+let dragTabId = null, tabDrop = null;
+const clearTabDrop = () => {
+  tabsEl.querySelectorAll('.drop-before, .drop-after').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+  tabDrop = null;
+};
+tabsEl.addEventListener('dragstart', e => {
+  dragTabId = e.target.closest('.tab')?.dataset.id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', '');
+});
+tabsEl.addEventListener('dragover', e => {
+  if (!dragTabId) return;
+  clearTabDrop();
+  const el = e.target.closest('.tab');
+  if (!el || el.dataset.id === dragTabId) return;
+  e.preventDefault();
+  const r = el.getBoundingClientRect(), after = e.clientX > r.left + r.width / 2;
+  el.classList.add(after ? 'drop-after' : 'drop-before');
+  tabDrop = { id: el.dataset.id, after };
+});
+tabsEl.addEventListener('drop', e => {
+  e.preventDefault();
+  if (!tabDrop) return;
+  const moving = tabs.find(t => t.id === dragTabId), { id, after } = tabDrop;
+  tabs.splice(tabs.indexOf(moving), 1);
+  tabs.splice(tabs.findIndex(t => t.id === id) + (after ? 1 : 0), 0, moving);
+  clearTabDrop();
+  save();
+  renderTabs();
+});
+tabsEl.addEventListener('dragend', () => { clearTabDrop(); dragTabId = null; });
+
+addEventListener('storage', e => { if (e.key === STORE_KEY && e.newValue) syncFromStorage(); });
+
+const saved = load();
+tabs = saved ? saved.list : [makeTab(blankMap())];
+activate(tabs.find(t => t.id === saved?.activeId) || tabs[0]);
 // 页面刚加载时画布可能还没有尺寸，等有了尺寸再适配一次
 const firstFit = new ResizeObserver(() => {
   if (!stage.clientWidth) return;
